@@ -29,7 +29,7 @@ type EndpointPropertyMap = {
 
 // Create a mapped type that only allows properties for supported endpoints
 type QuotaProperties<T extends readonly EndpointType[]> = {
-  [K in T[number] as EndpointPropertyMap[K]]?: QuotaCodes;
+  [K in T[number]as EndpointPropertyMap[K]]?: QuotaCodes;
 };
 
 export interface QuotaCodes {
@@ -45,7 +45,7 @@ export interface QuotaCodes {
  */
 export function validateQuotaCodes(quotaCodes: QuotaCodes, modelId: string): string[] {
   const warnings: string[] = [];
-  
+
   if (!quotaCodes.tokenQuotaCode && !quotaCodes.requestQuotaCode) {
     warnings.push(`Model ${modelId}: No quota codes provided. Consider adding both tokenQuotaCode and requestQuotaCode for complete monitoring.`);
   } else if (!quotaCodes.tokenQuotaCode) {
@@ -53,7 +53,7 @@ export function validateQuotaCodes(quotaCodes: QuotaCodes, modelId: string): str
   } else if (!quotaCodes.requestQuotaCode) {
     warnings.push(`Model ${modelId}: Missing requestQuotaCode. Consider adding for complete request monitoring.`);
   }
-  
+
   return warnings;
 }
 
@@ -61,10 +61,16 @@ interface EnhancedModelConfig<T extends readonly EndpointType[] = EndpointType[]
   readonly modelId: string;
   readonly outputTokenBurndownRate: number;
   readonly supportedEndpoints: T;
+  /**
+   * The model's native max output tokens. Used as a fallback in dashboard metric
+   * calculations when callers don't set max_tokens in their InvokeModel requests.
+   * @example 128000
+   */
+  readonly defaultMaxTokens?: number;
 }
 
 // Intersection type that combines base config with quota properties
-export type ModelConfig<T extends readonly EndpointType[]> = 
+export type ModelConfig<T extends readonly EndpointType[]> =
   EnhancedModelConfig<T> & QuotaProperties<T>;
 
 // =============================================================================
@@ -80,6 +86,7 @@ export function createModelConfig<T extends readonly EndpointType[]>(
     modelId: string;
     outputTokenBurndownRate: number;
     supportedEndpoints: T;
+    defaultMaxTokens?: number;
   } & QuotaProperties<T>
 ): ModelConfig<T> {
   // Validate quota codes for each endpoint and log warnings
@@ -92,7 +99,7 @@ export function createModelConfig<T extends readonly EndpointType[]>(
       });
     }
   });
-  
+
   return config;
 }
 

@@ -17,7 +17,7 @@ interface DashboardConfig {
    * @example BEDROCK_MODELS.ANTHROPIC.CLAUDE_3_HAIKU
    */
   modelConfig: any; // Model config object with modelId, outputTokenBurndownRate, and quota properties
-  
+
   /**
    * The endpoint type for this model. Must be supported by the model.
    * Use getSupportedEndpointTypes(modelConfig) to check valid options.
@@ -31,7 +31,7 @@ interface DashboardConfig {
    * @example 'global-cross-region'
    */
   endpointType: EndpointType;
-  
+
   /**
    * Optional list of application inference profile IDs that share quota with this model.
    * 
@@ -54,7 +54,7 @@ interface DashboardConfig {
  */
 function validateAllDashboardConfigs(configs: DashboardConfig[]): void {
   const errors: string[] = [];
-  
+
   configs.forEach((config, index) => {
     if (!validateModelEndpointSupport(config.modelConfig, config.endpointType)) {
       const supported = getSupportedEndpointTypes(config.modelConfig);
@@ -65,7 +65,7 @@ function validateAllDashboardConfigs(configs: DashboardConfig[]): void {
       }
     }
   });
-  
+
   if (errors.length > 0) {
     throw new Error(`Invalid dashboard configurations found:\n${errors.join('\n')}\n\nPlease check the quota mappings in the region-specific registry file for valid model/endpoint combinations.`);
   }
@@ -287,10 +287,10 @@ export class CdkQuotaDashboardsStack extends cdk.Stack {
 
       // Get burndown rate from model config
       const burndownRate = config.modelConfig.outputTokenBurndownRate;
-      
+
       // Check if we have application profiles to aggregate
       const hasApplicationProfiles = config.applicationProfileIds && config.applicationProfileIds.length > 0;
-      const allProfileIds = hasApplicationProfiles 
+      const allProfileIds = hasApplicationProfiles
         ? [fullModelId, ...config.applicationProfileIds!]
         : [fullModelId];
 
@@ -361,6 +361,13 @@ export class CdkQuotaDashboardsStack extends cdk.Stack {
           statistic: 'Sum',
           period: cdk.Duration.minutes(1),
         }),
+        maxTokensCount: new cloudwatch.Metric({
+          namespace: 'Bedrock/Quotas',
+          metricName: 'MaxTokens',
+          dimensionsMap: { ModelId: profileId },
+          statistic: 'SampleCount',
+          period: cdk.Duration.minutes(1),
+        }),
         invocations: new cloudwatch.Metric({
           namespace: 'AWS/Bedrock',
           metricName: 'Invocations',
@@ -389,6 +396,7 @@ export class CdkQuotaDashboardsStack extends cdk.Stack {
         const cacheParts: string[] = [];
         const outputParts: string[] = [];
         const maxTokensParts: string[] = [];
+        const maxTokensCountParts: string[] = [];
         const invocationParts: string[] = [];
 
         allProfileMetrics.forEach(({ metrics, suffix }) => {
@@ -396,18 +404,21 @@ export class CdkQuotaDashboardsStack extends cdk.Stack {
           const cacheKey = `cacheWriteTokens${suffix}`;
           const outputKey = `outputTokens${suffix}`;
           const maxKey = `maxTokens${suffix}`;
+          const maxCountKey = `maxTokensCount${suffix}`;
           const invKey = `invocations${suffix}`;
 
           usingMetrics[inputKey] = metrics.inputTokens;
           usingMetrics[cacheKey] = metrics.cacheWriteTokens;
           usingMetrics[outputKey] = metrics.outputTokens;
           usingMetrics[maxKey] = metrics.maxTokens;
+          usingMetrics[maxCountKey] = metrics.maxTokensCount;
           usingMetrics[invKey] = metrics.invocations;
 
           inputParts.push(inputKey);
           cacheParts.push(cacheKey);
           outputParts.push(outputKey);
           maxTokensParts.push(maxKey);
+          maxTokensCountParts.push(maxCountKey);
           invocationParts.push(invKey);
         });
 
@@ -415,8 +426,12 @@ export class CdkQuotaDashboardsStack extends cdk.Stack {
         const inputSum = inputParts.join(' + ');
         const cacheSum = cacheParts.join(' + ');
         const outputSum = outputParts.join(' + ');
-        const maxTokensSum = maxTokensParts.join(' + ');
         const invocationSum = invocationParts.join(' + ');
+
+        const defaultMaxTokens = config.modelConfig.defaultMaxTokens;
+        const effectiveMaxTokensSum = defaultMaxTokens !== undefined
+          ? maxTokensParts.map((maxKey, i) => `FILL(${maxKey}, 0) + ((${invocationParts[i]} - FILL(${maxTokensCountParts[i]}, 0)) * ${defaultMaxTokens})`).join(' + ')
+          : maxTokensParts.join(' + ');
 
         actualConsumption = new cloudwatch.MathExpression({
           expression: `(${inputSum}) + (${cacheSum}) + ((${outputSum}) * ${burndownRate})`,
@@ -426,7 +441,7 @@ export class CdkQuotaDashboardsStack extends cdk.Stack {
         });
 
         initialReservation = new cloudwatch.MathExpression({
-          expression: `(${inputSum}) + (${cacheSum}) + (${maxTokensSum})`,
+          expression: `(${inputSum}) + (${cacheSum}) + (${effectiveMaxTokensSum})`,
           usingMetrics,
           label: `Initial Reservation (${allProfileIds.length} profiles)`,
           period: cdk.Duration.minutes(1),
@@ -455,13 +470,23 @@ export class CdkQuotaDashboardsStack extends cdk.Stack {
           period: cdk.Duration.minutes(1),
         });
 
+        const defaultMaxTokens = config.modelConfig.defaultMaxTokens;
+        const initialReservationUsingMetrics: { [key: string]: cloudwatch.IMetric } = {
+          inputTokens: metrics.inputTokens,
+          cacheWriteTokens: metrics.cacheWriteTokens,
+          maxTokens: metrics.maxTokens,
+        };
+        let initialReservationExpression = 'inputTokens + cacheWriteTokens + maxTokens';
+
+        if (defaultMaxTokens !== undefined) {
+          initialReservationUsingMetrics['invocations'] = metrics.invocations;
+          initialReservationUsingMetrics['maxTokensCount'] = metrics.maxTokensCount;
+          initialReservationExpression = `inputTokens + cacheWriteTokens + FILL(maxTokens, 0) + ((invocations - FILL(maxTokensCount, 0)) * ${defaultMaxTokens})`;
+        }
+
         initialReservation = new cloudwatch.MathExpression({
-          expression: 'inputTokens + cacheWriteTokens + maxTokens',
-          usingMetrics: {
-            inputTokens: metrics.inputTokens,
-            cacheWriteTokens: metrics.cacheWriteTokens,
-            maxTokens: metrics.maxTokens,
-          },
+          expression: initialReservationExpression,
+          usingMetrics: initialReservationUsingMetrics,
           label: 'Initial Reservation',
           period: cdk.Duration.minutes(1),
         });
@@ -491,7 +516,7 @@ export class CdkQuotaDashboardsStack extends cdk.Stack {
       });
 
       // Build widget title with profile count if aggregating
-      const titleSuffix = hasApplicationProfiles 
+      const titleSuffix = hasApplicationProfiles
         ? ` (${allProfileIds.length} profiles aggregated)`
         : '';
 
@@ -577,6 +602,10 @@ export class CdkQuotaDashboardsStack extends cdk.Stack {
         id: 'AwsSolutions-IAM5',
         reason: 'Service Quotas API and CloudWatch PutMetricData require wildcard permissions as they do not support resource-level permissions. Custom Resource Provider requires Lambda invoke permissions with version suffix wildcard.',
         appliesTo: ['Resource::*', 'Resource::<QuotaFetcher87D05653.Arn>:*']
+      },
+      {
+        id: 'AwsSolutions-L1',
+        reason: 'Python 3.13 is the latest Lambda runtime. cdk-nag has not yet updated its runtime checks to recognize it.',
       }
     ]);
   }
