@@ -71,12 +71,16 @@ To deploy to a different region:
    export * from './bedrock-registries/us-east-1';     // ✅ Uncomment target region
    ```
 
-2. **Deploy with explicit region:**
+2. **Update dashboard configs in `lib/cdk-quota-dashboards-stack.ts`:**
+   
+   The `allDashboardConfigs` array must use endpoint types that are supported in your target region's registry. Models may support different endpoints in different regions (e.g., a model might have `regional` in eu-west-2 but only `cross-region` in us-east-1). The stack validates this at deploy time and will error if there's a mismatch.
+
+3. **Deploy with explicit region:**
    ```bash
    AWS_DEFAULT_REGION=your-target-region npx cdk deploy
    ```
 
-3. **For new regions:** Create region-specific quota file using:
+4. **For new regions:** Create region-specific quota file using:
    ```bash
    AWS_DEFAULT_REGION=your-region npx ts-node scripts/get-quota-codes.ts
    ```
@@ -84,6 +88,7 @@ To deploy to a different region:
 ### ⚠️ Important Notes
 
 - **Registry import must match deployment region** - mismatched regions will use incorrect quota codes
+- **Dashboard configs must match the registry** - endpoint types in `allDashboardConfigs` must be supported by the active region's registry
 - **Use `AWS_DEFAULT_REGION=` prefix** for deployment commands
 - **Only one region import should be active** - comment out all others to avoid conflicts
 - **Quota codes are region-specific** - using wrong region's codes will cause monitoring failures
